@@ -689,7 +689,7 @@
       }
       .trend-row {
         display: grid;
-        grid-template-columns: 1.5fr 1fr;
+        grid-template-columns: 1.2fr 1fr 1fr;
         gap: 10px;
         margin: 14px 0 4px;
       }
@@ -700,6 +700,25 @@
         background: #fafbfd;
         border: 1px solid var(--line);
         padding: 10px 12px 8px;
+      }
+      .reported-pricing-wrap {
+        background: #fff8ee;
+        border: 1px solid #f0dcb8;
+        border-top: 3px solid var(--ahx-orange);
+        padding: 10px 12px 8px;
+      }
+      .reported-pricing-title {
+        font-family: 'Impact', 'Haettenschweiler', 'Arial Narrow', sans-serif;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--ahx-navy);
+        margin-bottom: 8px;
+      }
+      .reported-pricing-title::before {
+        content: '› ';
+        color: var(--ahx-orange);
+        font-weight: 900;
       }
       .rec-carriers {
         margin-top: 14px;
@@ -3486,10 +3505,26 @@
           }
           const perVinFinal = floorInfo && floorInfo.applied ? floorInfo.floorPerVin : perVinPrice;
           const preFloorTotal = perVinPrice * vinCount * volumeMult;
-          const totalQuote = perVinFinal * vinCount * volumeMult;
+          let totalQuote = perVinFinal * vinCount * volumeMult;
           const marketFloorAdj = totalQuote - preFloorTotal;
           // Volume savings shown on the pre-floor build-up; the floor is a separate line.
           const volumeDiscountSavings = perVinPrice * vinCount * (1 - volumeMult);
+
+          // OPERATOR FEEDBACK NUDGE — slightly bias the quote toward the most recent
+          // prices the operator has logged for this lane (recency-weighted, ±8% cap).
+          const feedback = computeFeedbackAdjust(
+            originSt,
+            destSt,
+            vehicleType,
+            perVinFinal,
+            Date.now(),
+          );
+          let feedbackAdj = 0;
+          if (feedback) {
+            const newTotal = feedback.perVinAfter * vinCount * volumeMult;
+            feedbackAdj = newTotal - totalQuote;
+            totalQuote = newTotal;
+          }
 
           // Confidence
           let confidence = 'lo',
@@ -3545,6 +3580,8 @@
             floorInfo,
             preFloorTotal,
             marketFloorAdj,
+            feedback,
+            feedbackAdj,
             confidence,
             confLabel,
             dataSource,
@@ -3801,29 +3838,49 @@
             .sort((a, b) => (b.ts || 0) - (a.ts || 0))
             .slice(0, 6);
         }
-        function fbReportedPanelHtml(oSt, dSt) {
-          const prior = fbPriorForLane(oSt, dSt);
-          if (!prior.length) return '';
-          const fmt$ = (n) => '$' + Math.round(n).toLocaleString('en-US');
-          const rows = prior
-            .map((e) => {
-              const d = e.ts ? new Date(e.ts) : null;
-              const ds = d
-                ? `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`
-                : '';
-              const veh = VEH_LABEL[e.veh] || e.veh || '';
-              return `<div class="fb-reported-row">
-          <div><strong>${veh}</strong> · ${e.units} unit${e.units > 1 ? 's' : ''} <span class="fbr-meta">${ds}</span>${e.note ? ` <span class="fbr-meta">· ${String(e.note).replace(/[<>&]/g, '')}</span>` : ''}</div>
-          <div class="fbr-price">${fmt$(e.perVin)}<span class="fbr-meta"> / veh</span></div>
-        </div>`;
-            })
-            .join('');
-          return `
-      <div class="fb-reported">
-        <div class="fb-reported-title">Your reported lane prices · ${oSt} → ${dSt}</div>
-        ${rows}
-        <div class="small-note" style="margin-top:6px">Live prices you've logged for this lane. Used as a sanity check against the quote.</div>
-      </div>`;
+        // Recency-weighted nudge from operator-reported prices. Observations are
+        // normalized to the quoted vehicle class, weighted by recency (30-day
+        // half-life, ignored past 120 days), blended in at a small strength, and
+        // the net move is clamped to ±8% of the quote so it stays a "slight"
+        // adjustment — never a hard override.
+        function computeFeedbackAdjust(oSt, dSt, vehType, quotePerVin, nowMs) {
+          const entries = fbLoadAll().filter((e) => e.oSt === oSt && e.dSt === dSt && e.perVin > 0);
+          if (!entries.length || !(quotePerVin > 0)) return null;
+          const HALFLIFE_DAYS = 30;
+          const MAXAGE_DAYS = 120;
+          const qMult = VEH_MULT[vehType] || 1;
+          let wSum = 0,
+            wx = 0,
+            used = 0,
+            newest = 0;
+          for (const e of entries) {
+            const ageDays = (nowMs - (e.ts || nowMs)) / 86400000;
+            if (ageDays > MAXAGE_DAYS) continue;
+            const ratio = qMult / (VEH_MULT[e.veh] || 1); // class-normalize the observation
+            const norm = e.perVin * ratio;
+            const w = Math.pow(0.5, Math.max(0, ageDays) / HALFLIFE_DAYS);
+            wSum += w;
+            wx += w * norm;
+            used++;
+            if ((e.ts || 0) > newest) newest = e.ts || 0;
+          }
+          if (wSum <= 0 || used === 0) return null;
+          const target = wx / wSum;
+          const alpha = Math.min(0.25, 0.1 * wSum); // blend strength grows with evidence, capped
+          let adjPerVin = (target - quotePerVin) * alpha;
+          const cap = quotePerVin * 0.08; // ± 8% clamp keeps it "slight"
+          adjPerVin = Math.max(-cap, Math.min(cap, adjPerVin));
+          if (Math.abs(adjPerVin) < 1) return null; // negligible — skip the row
+          return {
+            target,
+            alpha,
+            wSum,
+            used,
+            newest,
+            adjPerVin,
+            perVinBefore: quotePerVin,
+            perVinAfter: quotePerVin + adjPerVin,
+          };
         }
         function feedbackSectionHtml(q) {
           const vehOpts = Object.keys(VEH_LABEL)
@@ -3833,7 +3890,6 @@
             )
             .join('');
           return `
-      ${fbReportedPanelHtml(q.originSt, q.destSt)}
       <div class="fb-launch">
         <button type="button" class="fb-btn" id="fbOpenBtn">＋ Report the price you're seeing</button>
         <span class="fb-launch-note">Log a live lane price to sharpen the tool</span>
@@ -3939,22 +3995,9 @@
           cmp.hidden = false;
           cmp.innerHTML =
             `Saved. You're seeing <strong>${fmt$(perVin)}/veh</strong> — that's ${dir} our ${fmt$(ourPerVin)}/veh carrier-pay quote.` +
-            (Math.abs(deltaPct) >= 12
-              ? `<br><span class="small-note">Logged for ${q.originSt} → ${q.destSt}. Big gaps like this flag lanes worth recalibrating.</span>`
-              : `<br><span class="small-note">Logged for ${q.originSt} → ${q.destSt}.</span>`);
-          // refresh the reported panel in place so the new entry shows immediately
-          const existing = document.querySelector('.fb-reported');
-          const freshHtml = fbReportedPanelHtml(q.originSt, q.destSt);
-          if (freshHtml) {
-            const tmp = document.createElement('div');
-            tmp.innerHTML = freshHtml;
-            const node = tmp.firstElementChild;
-            if (existing) existing.replaceWith(node);
-            else {
-              const launch = document.querySelector('.fb-launch');
-              if (launch) launch.parentNode.insertBefore(node, launch);
-            }
-          }
+            `<br><span class="small-note">Future quotes for ${q.originSt} → ${q.destSt} will nudge slightly toward your recent reports (recency-weighted, capped at ±8%). Re-run this lane to see it.</span>`;
+          // refresh the "Reported Pricing" box so the new entry shows immediately
+          drawReportedPricing(q.originSt, q.destSt);
         }
 
         function carrierTableHtml(originSt, destSt) {
@@ -4027,6 +4070,10 @@
         <div class="recent-shipments-wrap">
           <div class="recent-shipments-title">Most Recent Shipments</div>
           <div id="recentShipmentsList" class="recent-shipments-list"></div>
+        </div>
+        <div class="reported-pricing-wrap">
+          <div class="reported-pricing-title">Reported Pricing</div>
+          <div id="reportedPricingList" class="recent-shipments-list"></div>
         </div>
       </div>`
       }
@@ -4125,6 +4172,15 @@
           <td style="color: var(--ahx-orange);">+${fmt(q.marketFloorAdj)}</td>
         </tr>`
             : ``
+        }${
+          q.feedback && Math.round(q.feedbackAdj) !== 0
+            ? `
+        <tr>
+          <td>Operator-reported adjustment</td>
+          <td>recency-weighted to your logged ${fmt(q.feedback.target)}/veh (${q.feedback.used} report${q.feedback.used > 1 ? 's' : ''})</td>
+          <td style="color: var(--ahx-orange);">${q.feedbackAdj >= 0 ? '+' : '−'}${fmt(Math.abs(q.feedbackAdj))}</td>
+        </tr>`
+            : ``
         }
         <tr class="total">
           <td>${q.vinCount > 1 ? `Carrier pay total (${q.vinCount} VINs)` : `Carrier pay (1 VIN)`}</td>
@@ -4162,7 +4218,42 @@
             if (typeof Chart !== 'undefined')
               drawTrendChart(q.originSt, q.destSt, q.totalQuote / q.vinCount);
             drawRecentShipments(q.originSt, q.destSt);
+            drawReportedPricing(q.originSt, q.destSt);
           }
+        }
+
+        // "Reported Pricing" box — operator-logged live prices for this lane,
+        // shown alongside Most Recent Shipments (feeds the quote nudge).
+        function drawReportedPricing(originSt, destSt) {
+          const container = document.getElementById('reportedPricingList');
+          if (!container) return;
+          const reports = fbPriorForLane(originSt, destSt);
+          if (!reports.length) {
+            container.innerHTML = `<div class="recent-empty">No reported prices yet for ${originSt} → ${destSt}. Use “Report the price you're seeing” below to log one.</div>`;
+            return;
+          }
+          const fmt$ = (n) => '$' + Math.round(n).toLocaleString('en-US');
+          const fmtDate = (ts) => {
+            const d = new Date(ts);
+            return `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
+          };
+          const esc = (s) => String(s || '').replace(/[<>&]/g, '');
+          container.innerHTML = reports
+            .map((e) => {
+              const veh = VEH_LABEL[e.veh] || e.veh || '';
+              return `<div class="recent-row">
+       <div class="rdate">${e.ts ? fmtDate(e.ts) : ''}</div>
+       <div>
+         <div class="rlane">${esc(veh)}</div>
+         <div class="rmeta">${e.units} unit${e.units > 1 ? 's' : ''}${e.note ? ` · ${esc(e.note)}` : ''}</div>
+       </div>
+       <div class="rprice-block">
+         <div class="rprice">${fmt$(e.perVin)}</div>
+         <div class="rpervin">/ veh</div>
+       </div>
+     </div>`;
+            })
+            .join('');
         }
 
         function drawRecentShipments(originSt, destSt) {
