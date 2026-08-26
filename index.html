@@ -1680,19 +1680,28 @@
         // state lane): the real discount is far shallower than first-pass estimates —
         // 2 VIN ≈0.91, 3 ≈0.89, 4 ≈0.86, 5 ≈0.82, 6 ≈0.83 (n=109/51/23/20/17). Smoothed
         // monotonic; 7-9 extrapolated (thin samples). Prior ladder under-quoted bulk loads.
-        const VIN_VOLUME_DISCOUNT = {
-          1: 1.0,
-          2: 0.9,
-          3: 0.87,
-          4: 0.84,
-          5: 0.82,
-          6: 0.8,
-          7: 0.78,
-          8: 0.76,
-          9: 0.74,
-        };
-        function vinDiscount(n) {
-          return VIN_VOLUME_DISCOUNT[Math.min(Math.max(n, 1), 9)] || 0.85;
+        // Multi-VIN per-vehicle discount, DISTANCE-BANDED. From AHX internal analysis
+        // (12,252 shipments, Jan–20 Aug 2026 — "Price per mile by shipment size" /
+        // "Multi-vehicle shipping"), median all-in, measured vs single-vehicle within
+        // the SAME distance band (like-for-like). Two documented shapes the old flat
+        // ladder missed: (1) the break shrinks with distance — a 2nd vehicle saves ~20%
+        // under 250 mi but only ~6% over 1,200; (2) "3-to-5 is flat" and "6+ is the step
+        // change" (~−30%), not a smooth ramp. Values are per-vehicle multipliers.
+        //   band = { two, midMult (3–5), sixPlus }
+        const VIN_VOLUME_BANDS = [
+          { maxMi: 250, two: 0.8, mid: 0.67, six: 0.67 }, // −20% / −33% / −33%
+          { maxMi: 600, two: 0.83, mid: 0.82, six: 0.7 }, // −17% / −18% / −30%
+          { maxMi: 1200, two: 0.88, mid: 0.82, six: 0.7 }, // −12% / −18% / −30%
+          { maxMi: Infinity, two: 0.94, mid: 0.83, six: 0.67 }, // −6% / −17% / −33%
+        ];
+        function vinDiscount(n, miles) {
+          n = Math.min(Math.max(n, 1), 12);
+          if (n === 1) return 1.0;
+          const mi = miles > 0 ? miles : 700; // default to the mid band if unknown
+          const b = VIN_VOLUME_BANDS.find((x) => mi <= x.maxMi) || VIN_VOLUME_BANDS[2];
+          if (n === 2) return b.two;
+          if (n <= 5) return b.mid; // 3–5 flat — adding the 4th/5th costs ~full freight
+          return b.six; // 6+ is the step change
         }
 
         function loadCfg() {
@@ -3507,7 +3516,7 @@
           // Volume discount still applies on multi-VIN loads.
           const isShortHaul = miles <= cfg.shortHaulMaxMiles;
           const perVinPrice = isShortHaul ? cfg.shortHaulFlatRate : carrierPay;
-          const volumeMult = vinDiscount(vinCount);
+          const volumeMult = vinDiscount(vinCount, miles);
 
           // LIVE MARKET FLOOR — the delivered/paid lane history lags live bookings, so
           // keep the per-vehicle rate from sitting below what carriers are currently
