@@ -4597,6 +4597,14 @@
             const tmp = o.value;
             o.value = d.value;
             d.value = tmp;
+            // Fire input events so the resolved "City, ST" labels (and autocomplete
+            // state) refresh to the swapped values — setting .value alone leaves the
+            // labels stale. Then close any open suggestion dropdowns.
+            o.dispatchEvent(new Event('input', { bubbles: true }));
+            d.dispatchEvent(new Event('input', { bubbles: true }));
+            document
+              .querySelectorAll('.suggest-dropdown')
+              .forEach((dd) => dd.classList.remove('open'));
           });
           document.getElementById('resetBtn').addEventListener('click', () => {
             document.getElementById('originZip').value = '';
