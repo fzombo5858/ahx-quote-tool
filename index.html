@@ -773,6 +773,114 @@
         color: var(--text-muted, #6a7790);
         font-size: 12px;
       }
+      /* ---- Fee calculator (markup slider) ---- */
+      .fee-calc {
+        margin: 14px 0 4px;
+        background: #fafbfd;
+        border: 1px solid var(--line);
+        border-top: 3px solid var(--ahx-blue, #0026be);
+        padding: 12px 14px 14px;
+      }
+      .fee-calc-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+      .fee-calc-title {
+        font-family: 'Impact', 'Haettenschweiler', 'Arial Narrow', sans-serif;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--ahx-navy);
+      }
+      .fee-calc-title::before {
+        content: '› ';
+        color: var(--ahx-blue, #0026be);
+        font-weight: 900;
+      }
+      .fee-calc-pct {
+        font-family: 'Impact', 'Haettenschweiler', 'Arial Narrow', sans-serif;
+        font-size: 18px;
+        font-weight: 900;
+        color: var(--ahx-blue, #0026be);
+        font-variant-numeric: tabular-nums;
+      }
+      .fee-slider {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 100%;
+        height: 6px;
+        border-radius: 4px;
+        background: linear-gradient(
+          to right,
+          var(--ahx-blue, #0026be) var(--fill, 0%),
+          #d7dced var(--fill, 0%)
+        );
+        outline: none;
+        margin: 4px 0 12px;
+        cursor: pointer;
+      }
+      .fee-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #fff;
+        border: 3px solid var(--ahx-blue, #0026be);
+        cursor: pointer;
+        box-shadow: 0 1px 3px rgba(4, 7, 47, 0.3);
+      }
+      .fee-slider::-moz-range-thumb {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #fff;
+        border: 3px solid var(--ahx-blue, #0026be);
+        cursor: pointer;
+      }
+      .fee-calc-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 13.5px;
+      }
+      .fee-calc-grid > div {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+      .fee-calc-grid .fee-lbl {
+        color: var(--text-muted, #6a7790);
+      }
+      .fee-calc-grid .fee-lbl em {
+        font-style: normal;
+        color: var(--ahx-blue, #0026be);
+        font-weight: 700;
+      }
+      .fee-calc-grid .fee-val {
+        font-weight: 700;
+        color: var(--ahx-navy);
+        font-variant-numeric: tabular-nums;
+      }
+      .fee-calc-grid .fee-add {
+        color: var(--ahx-blue, #0026be);
+      }
+      .fee-calc-grid .fee-total-row {
+        margin-top: 4px;
+        padding-top: 6px;
+        border-top: 1px solid var(--line);
+      }
+      .fee-calc-grid .fee-total-row .fee-lbl {
+        color: var(--ahx-navy);
+        font-weight: 700;
+      }
+      .fee-calc-grid .fee-total-row .fee-val {
+        font-family: 'Impact', 'Haettenschweiler', 'Arial Narrow', sans-serif;
+        font-size: 18px;
+        font-weight: 900;
+      }
       /* ---- Lane price feedback pop-out ---- */
       .fb-launch {
         margin-top: 14px;
@@ -3981,6 +4089,27 @@
           });
           document.getElementById('fbSaveBtn').addEventListener('click', submitFeedback);
         }
+        // Fee calculator — slide 0–30% to add a fee on top of the posted price and
+        // see the combined total. Base = the quote's Posted price.
+        function wireFeeCalculator() {
+          const wrap = document.querySelector('.fee-calc');
+          const slider = document.getElementById('feeSlider');
+          if (!wrap || !slider) return;
+          const posted = parseFloat(wrap.dataset.posted) || 0;
+          const fmt$ = (n) => '$' + Math.round(n).toLocaleString('en-US');
+          const update = () => {
+            const pct = parseFloat(slider.value) || 0;
+            const fee = posted * (pct / 100);
+            const pctTxt = (Number.isInteger(pct) ? pct : pct.toFixed(1)) + '%';
+            document.getElementById('feePct').textContent = pctTxt;
+            document.getElementById('feePctInline').textContent = pctTxt;
+            document.getElementById('feeAmt').textContent = (fee > 0 ? '+' : '') + fmt$(fee);
+            document.getElementById('feeTotal').textContent = fmt$(posted + fee);
+            slider.style.setProperty('--fill', (pct / 30) * 100 + '%');
+          };
+          slider.addEventListener('input', update);
+          update();
+        }
         function submitFeedback() {
           const q = window.__lastQuote;
           if (!q) return;
@@ -4081,6 +4210,27 @@
         <div><strong>${q.originLoc.displayLabel}</strong> → <strong>${q.destLoc.displayLabel}</strong></div>
         <div>${q.miles.toLocaleString()} mi</div>
         <div>${q.vinCount} × ${VEH_LABEL[q.vehicleType] || q.vehicleType} · ${q.equipment} · ${q.operability}</div>
+      </div>
+      <div class="fee-calc" data-posted="${lowRange}">
+        <div class="fee-calc-head">
+          <span class="fee-calc-title">Add your fee</span>
+          <span class="fee-calc-pct" id="feePct">0%</span>
+        </div>
+        <input
+          type="range"
+          id="feeSlider"
+          class="fee-slider"
+          min="0"
+          max="30"
+          step="0.5"
+          value="0"
+          aria-label="Fee percentage"
+        />
+        <div class="fee-calc-grid">
+          <div><span class="fee-lbl">Posted price</span><span class="fee-val">${fmt(lowRange)}</span></div>
+          <div><span class="fee-lbl">Your fee <em id="feePctInline">0%</em></span><span class="fee-val fee-add" id="feeAmt">$0</span></div>
+          <div class="fee-total-row"><span class="fee-lbl">Total with fee</span><span class="fee-val" id="feeTotal">${fmt(lowRange)}</span></div>
+        </div>
       </div>
       <div class="lane-map-wrap">
         <div id="laneMap" class="lane-map-canvas"></div>
@@ -4238,6 +4388,7 @@
           // Stash the current quote so the price-feedback pop-out can read its lane context
           window.__lastQuote = q;
           wireFeedbackControls();
+          wireFeeCalculator();
           // Render the lane map (Mapbox basemap + Directions route, with SVG fallback)
           drawLaneMap(q.originLoc, q.destLoc, q.miles);
           // Layer in the live market signal (board staleness + carrier bids + booked/in-transit)
